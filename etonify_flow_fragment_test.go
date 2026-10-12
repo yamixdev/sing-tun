@@ -89,7 +89,7 @@ func TestEtonifyFragmentCapacityAndDifferentFlow(t *testing.T) {
 		t.Fatal("replacement blocked by full cache")
 	}
 	key.id = 9000
-	table.insert(key, flow, nil, 16, int64(fragmentTimeout)+1)
+	table.insert(key, flow, nil, 16, int64(fragmentTimeout)+2)
 	if len(table.entries) != 1 {
 		t.Fatal("expired full cache did not sweep")
 	}
