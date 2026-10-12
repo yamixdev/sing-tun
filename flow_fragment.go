@@ -25,7 +25,8 @@ type fragmentEntry struct {
 	flow     *forwardFlow
 	rule     *rewriteRule
 	deadline int64
-	received int
+	coverage fragmentCoverage
+	maxEnd   int
 	total    int
 }
 
@@ -36,15 +37,24 @@ type fragmentTable struct {
 }
 
 func (t *fragmentTable) insert(key fragmentKey, flow *forwardFlow, rule *rewriteRule, received int, now int64) {
+	if !validFragmentRange(0, received, true) {
+		return
+	}
 	t.access.Lock()
 	defer t.access.Unlock()
+	if entry := t.entries[key]; entry != nil {
+		if entry.deadline > now && entry.flow == flow {
+			return // Duplicate first fragment must not erase coverage or extend TTL.
+		}
+		delete(t.entries, key)
+	}
 	if len(t.entries) >= fragmentTableCapacity {
 		if now-t.lastSweep < int64(fragmentSweepInterval) {
 			return
 		}
 		t.lastSweep = now
 		for existingKey, entry := range t.entries {
-			if entry.deadline < now {
+			if entry.deadline <= now {
 				delete(t.entries, existingKey)
 			}
 		}
@@ -52,7 +62,9 @@ func (t *fragmentTable) insert(key fragmentKey, flow *forwardFlow, rule *rewrite
 			return
 		}
 	}
-	t.entries[key] = &fragmentEntry{flow: flow, rule: rule, deadline: now + int64(fragmentTimeout), received: received, total: -1}
+	entry := &fragmentEntry{flow: flow, rule: rule, deadline: now + int64(fragmentTimeout), maxEnd: received, total: -1}
+	entry.coverage.add(0, received, true)
+	t.entries[key] = entry
 }
 
 func (t *fragmentTable) remove(key fragmentKey) {
@@ -62,21 +74,34 @@ func (t *fragmentTable) remove(key fragmentKey) {
 }
 
 func (t *fragmentTable) lookup(key fragmentKey, info fragmentInfo, now int64) *fragmentEntry {
+	if !validFragmentRange(info.offset, len(info.payload), info.more) {
+		return nil
+	}
 	t.access.Lock()
 	defer t.access.Unlock()
 	entry := t.entries[key]
 	if entry == nil {
 		return nil
 	}
-	if entry.deadline < now {
+	if entry.deadline <= now {
 		delete(t.entries, key)
 		return nil
 	}
-	entry.received += len(info.payload)
+	end := info.offset + len(info.payload)
 	if !info.more {
-		entry.total = info.offset + len(info.payload)
+		if entry.total == -2 || (entry.total >= 0 && entry.total != end) || entry.maxEnd > end {
+			entry.total = -2 // Conflicting final lengths poison completion until expiry.
+			return nil
+		}
+		entry.total = end
 	}
-	if entry.total >= 0 && entry.received >= entry.total {
+	if entry.total >= 0 && end > entry.total {
+		entry.total = -2
+		return nil
+	}
+	entry.maxEnd = max(entry.maxEnd, end)
+	entry.coverage.add(info.offset, len(info.payload), info.more)
+	if entry.coverage.complete(entry.total) {
 		delete(t.entries, key)
 	}
 	return entry
@@ -116,7 +141,7 @@ func parseFragment(parsed *forwardPacket) (fragmentInfo, bool) {
 
 func (r *portReturn) classifyFragment(parsed *forwardPacket, size int, now int64) (returnDecision, ForwardWriteback) {
 	info, ok := parseFragment(parsed)
-	if !ok {
+	if !ok || !validFragmentRange(info.offset, len(info.payload), info.more) {
 		return returnPass, nil
 	}
 	key := fragmentKey{
