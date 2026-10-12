@@ -234,10 +234,9 @@ func (d *ForwardDispatcher) now() int64 {
 }
 
 func (d *ForwardDispatcher) Close() {
-	if d == nil {
+	if d == nil || !d.closed.CompareAndSwap(false, true) {
 		return
 	}
-	d.closed.Store(true)
 	d.stagesAccess.Lock()
 	stages := d.stages
 	d.stagesAccess.Unlock()
@@ -250,6 +249,7 @@ func (d *ForwardDispatcher) Close() {
 	}
 	d.portsAccess.Lock()
 	returnPaths := slices.Collect(maps.Values(d.ports))
+	clear(d.ports)
 	d.portsAccess.Unlock()
 	for _, returnPath := range returnPaths {
 		returnPath.nat.port.DetachReturn(returnPath)
@@ -586,6 +586,9 @@ func (s *ForwardStage) createFlow(packet *forwardPacket, verdict FlowVerdict) (*
 func (d *ForwardDispatcher) natFor(port Port) *portNAT {
 	d.portsAccess.Lock()
 	defer d.portsAccess.Unlock()
+	if d.closed.Load() {
+		return nil
+	}
 	returnPath, loaded := d.ports[port]
 	if loaded {
 		return returnPath.nat
