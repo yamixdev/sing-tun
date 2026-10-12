@@ -593,9 +593,14 @@ func (d *ForwardDispatcher) natFor(port Port) *portNAT {
 	if loaded {
 		return returnPath.nat
 	}
+	nat := acquirePortNAT(port)
+	if nat == nil {
+		d.logger.Trace("forward NAT registry capacity exhausted")
+		return nil
+	}
 	returnPath = &portReturn{
 		dispatcher: d,
-		nat:        acquirePortNAT(port),
+		nat:        nat,
 		fragments:  fragmentTable{entries: make(map[fragmentKey]*fragmentEntry)},
 	}
 	err := port.AttachReturn(returnPath)
@@ -923,6 +928,9 @@ func (r *portReturn) classifyReturn(raw []byte, headroom int, now int64) (return
 			}
 		}
 		return returnPass, nil
+	}
+	if parsed.protocol == uint8(header.UDPProtocolNumber) && r.nat.selectorQuarantined(natSelectorKey{protocol: parsed.protocol, portAddress: parsed.destination.Addr(), selector: parsed.destination.Port()}, natNow()) {
+		return returnDrop, nil
 	}
 	flow, rule := r.matchReverse(&parsed)
 	if flow == nil {

@@ -153,6 +153,9 @@ func (r *portReturn) classifyFragment(parsed *forwardPacket, size int, now int64
 	if info.offset == 0 {
 		parsed.protocol = info.protocol
 		parsed.parseTransport(info.payload)
+		if parsed.hasFlow && parsed.protocol == uint8(header.UDPProtocolNumber) && r.nat.selectorQuarantined(natSelectorKey{protocol: parsed.protocol, portAddress: parsed.destination.Addr(), selector: parsed.destination.Port()}, natNow()) {
+			return returnDrop, nil
+		}
 		var (
 			flow *forwardFlow
 			rule *rewriteRule

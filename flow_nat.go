@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/contrab/maphash"
@@ -25,6 +26,8 @@ var (
 type portNAT struct {
 	port       Port
 	references int
+	idleTimer  *time.Timer // guarded by portNATAccess
+	generation uint64      // invalidates already-running cleanup callbacks
 	hasher     maphash.Hasher[flowKey]
 	shardMask  uint32
 	shards     []natShard
@@ -50,6 +53,8 @@ type natSelectorKey struct {
 type natSelector struct {
 	references uint32
 	mapping    *natMapping
+	deadline   int64
+	held       bool
 }
 
 type natMappingKey struct {
@@ -78,6 +83,12 @@ func acquirePortNAT(port Port) *portNAT {
 	defer portNATAccess.Unlock()
 	nat, loaded := portNATs[port]
 	if !loaded {
+		pruneRetiredPortNATsLocked(natNow())
+		// Reserve registry capacity for eventual retirement too: active allocators
+		// must never force an unexpired tombstone out when their last owner closes.
+		if len(portNATs) >= retiredPortNATCapacity {
+			return nil
+		}
 		shardCount := 1
 		for shardCount < runtime.GOMAXPROCS(0) {
 			shardCount <<= 1
@@ -95,17 +106,54 @@ func acquirePortNAT(port Port) *portNAT {
 		}
 		portNATs[port] = nat
 	}
+	if nat.idleTimer != nil {
+		nat.idleTimer.Stop()
+		nat.idleTimer = nil
+	}
+	nat.generation++
 	nat.references++
 	return nat
 }
 
 func releasePortNAT(nat *portNAT) {
-	portNATAccess.Lock()
-	defer portNATAccess.Unlock()
-	nat.references--
-	if nat.references == 0 {
-		delete(portNATs, nat.port)
+	if nat == nil {
+		return
 	}
+	portNATAccess.Lock()
+	nat.references--
+	if nat.references != 0 {
+		portNATAccess.Unlock()
+		return
+	}
+	nat.access.Lock()
+	var held []natSelectorKey
+	var deadline int64
+	for key, entry := range nat.selectors {
+		if entry.held {
+			held = append(held, key)
+			entry.held = false
+		}
+		deadline = max(deadline, entry.deadline)
+	}
+	nat.generation++
+	if deadline <= natNow() {
+		delete(portNATs, nat.port)
+		clear(nat.selectors)
+	} else {
+		generation := nat.generation
+		nat.idleTimer = time.AfterFunc(time.Duration(deadline-natNow()), func() { cleanupRetiredPortNAT(nat, generation, natNow()) })
+	}
+	// Keep the allocator lock until physical release completes so a reacquisition
+	// cannot reserve a selector while a previous generation is still freeing it.
+	// Never call external Port methods with the global registry locked.
+	portNATAccess.Unlock()
+	reserver, hasReserver := portCapability[PortWithSelectorReservation](nat.port)
+	if hasReserver {
+		for _, key := range held {
+			reserver.ReleaseSelector(key.protocol, netip.AddrPortFrom(key.portAddress, key.selector))
+		}
+	}
+	nat.access.Unlock()
 }
 
 func (n *portNAT) shard(key flowKey) *natShard {
@@ -202,6 +250,10 @@ func allocateSelector(ranges []SelectorRange, counter *uint32, claim func(candid
 }
 
 func (n *portNAT) reserve(dispatcher *ForwardDispatcher, protocol uint8, portAddress netip.Addr, client netip.AddrPort, server netip.AddrPort) (natReservation, bool) {
+	return n.reserveAt(dispatcher, protocol, portAddress, client, server, natNow())
+}
+
+func (n *portNAT) reserveAt(dispatcher *ForwardDispatcher, protocol uint8, portAddress netip.Addr, client netip.AddrPort, server netip.AddrPort, now int64) (natReservation, bool) {
 	reservation := natReservation{
 		selectorKey: natSelectorKey{protocol: protocol, portAddress: portAddress},
 	}
@@ -242,8 +294,12 @@ func (n *portNAT) reserve(dispatcher *ForwardDispatcher, protocol uint8, portAdd
 		selectorKey := natSelectorKey{protocol: protocol, portAddress: portAddress, selector: candidate}
 		reverseKey := n.reverseKeyFor(protocol, portAddress, server, candidate)
 		entry := n.selectors[selectorKey]
+		if entry != nil && entry.references == 0 && entry.deadline <= now {
+			n.expireSelectorLocked(selectorKey, entry)
+			entry = nil
+		}
 		if entry != nil {
-			if isUDP || !n.insertIfAbsent(reverseKey, nil) {
+			if entry.references == 0 || isUDP || !n.insertIfAbsent(reverseKey, nil) {
 				return false
 			}
 			entry.references++
@@ -258,7 +314,7 @@ func (n *portNAT) reserve(dispatcher *ForwardDispatcher, protocol uint8, portAdd
 				}
 				return false
 			}
-			n.selectors[selectorKey] = &natSelector{references: 1}
+			n.selectors[selectorKey] = &natSelector{references: 1, held: hasReserver}
 		}
 		reservation.selectorKey = selectorKey
 		reservation.reverseKey = reverseKey
@@ -311,10 +367,17 @@ func (n *portNAT) publish(flow *forwardFlow, reservation natReservation) {
 }
 
 func (n *portNAT) release(flow *forwardFlow) {
-	n.delete(flow.reverseKey, flow)
+	n.releaseAt(flow, natNow())
+}
+
+func (n *portNAT) releaseAt(flow *forwardFlow, now int64) {
 	n.access.Lock()
 	defer n.access.Unlock()
+	n.delete(flow.reverseKey, flow)
 	entry := n.selectors[flow.selectorKey]
+	if entry == nil || entry.references == 0 {
+		return
+	}
 	mapping := flow.mapping
 	if mapping != nil {
 		mapping.flows = slices.DeleteFunc(mapping.flows, func(owned *forwardFlow) bool { return owned == flow })
@@ -326,14 +389,15 @@ func (n *portNAT) release(flow *forwardFlow) {
 	if entry.references > 0 {
 		return
 	}
-	delete(n.selectors, flow.selectorKey)
 	if mapping != nil {
 		delete(n.mappings, mapping.key)
 	}
-	reserver, hasReserver := portCapability[PortWithSelectorReservation](n.port)
-	if hasReserver {
-		reserver.ReleaseSelector(flow.protocol, netip.AddrPortFrom(flow.selectorKey.portAddress, flow.selectorKey.selector))
+	entry.mapping = nil
+	if flow.protocol == uint8(header.UDPProtocolNumber) {
+		entry.deadline = now + int64(udpSelectorQuarantine)
+		return
 	}
+	n.expireSelectorLocked(flow.selectorKey, entry)
 }
 
 func (m *natMapping) liveFlowLocked() *forwardFlow {
