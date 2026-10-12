@@ -37,7 +37,7 @@ func TestEtonifyFragmentDuplicateFirstKeepsCoverageAndExpiry(t *testing.T) {
 	}
 	table.insert(key, flow, rule, 16, 0)
 	table.insert(key, flow, rule, 16, int64(20*time.Second))
-	if table.lookup(key, fragmentInfo{offset: 16, payload: make([]byte, 16)}, int64(fragmentTimeout)) != nil {
+	if table.lookup(key, fragmentInfo{offset: 16, payload: make([]byte, 16)}, int64(fragmentTimeout)+1) != nil {
 		t.Fatal("duplicate first extended fixed expiry")
 	}
 }

@@ -43,7 +43,7 @@ func (t *fragmentTable) insert(key fragmentKey, flow *forwardFlow, rule *rewrite
 	t.access.Lock()
 	defer t.access.Unlock()
 	if entry := t.entries[key]; entry != nil {
-		if entry.deadline > now && entry.flow == flow {
+		if entry.deadline >= now && entry.flow == flow {
 			return // Duplicate first fragment must not erase coverage or extend TTL.
 		}
 		delete(t.entries, key)
@@ -54,7 +54,7 @@ func (t *fragmentTable) insert(key fragmentKey, flow *forwardFlow, rule *rewrite
 		}
 		t.lastSweep = now
 		for existingKey, entry := range t.entries {
-			if entry.deadline <= now {
+			if entry.deadline < now {
 				delete(t.entries, existingKey)
 			}
 		}
@@ -83,7 +83,7 @@ func (t *fragmentTable) lookup(key fragmentKey, info fragmentInfo, now int64) *f
 	if entry == nil {
 		return nil
 	}
-	if entry.deadline <= now {
+	if entry.deadline < now {
 		delete(t.entries, key)
 		return nil
 	}
