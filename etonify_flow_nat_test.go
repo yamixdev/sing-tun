@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sagernet/sing/common/logger"
 )
@@ -377,4 +378,124 @@ func BenchmarkEtonifyNATQuarantineSweep(b *testing.B) {
 	}
 	b.StopTimer()
 	n.sweepQuarantine(int64(b.N) * int64(udpSelectorQuarantine))
+}
+
+type etonifyGoReservationPort struct {
+	etonifyClosePort
+	stack                      Go
+	entered, unblock, released chan struct{}
+}
+
+func newEtonifyGoReservationPort() *etonifyGoReservationPort {
+	p := &etonifyGoReservationPort{}
+	p.stack.directory.reserved = make(map[goPortKey]struct{})
+	return p
+}
+func (p *etonifyGoReservationPort) ReserveSelector(protocol uint8, address netip.AddrPort) bool {
+	return p.stack.ReserveSelector(protocol, address)
+}
+func (p *etonifyGoReservationPort) ReleaseSelector(protocol uint8, address netip.AddrPort) {
+	if p.entered != nil {
+		close(p.entered)
+		<-p.unblock
+	}
+	p.stack.ReleaseSelector(protocol, address)
+	if p.released != nil {
+		select {
+		case p.released <- struct{}{}:
+		default:
+		}
+	}
+}
+func (p *etonifyGoReservationPort) held(key natSelectorKey) bool {
+	p.stack.directory.access.RLock()
+	defer p.stack.directory.access.RUnlock()
+	return p.stack.directory.reservedLocked(key.protocol, netip.AddrPortFrom(key.portAddress, key.selector))
+}
+
+func TestEtonifyNATProductionExpiryReleasesGoReservation(t *testing.T) {
+	p := newEtonifyGoReservationPort()
+	p.released = make(chan struct{}, 1)
+	d := etonifyCloseDispatcher(t)
+	n := d.natFor(p)
+	f := etonifyNATFlowAt(t, n, d, 17, netip.MustParseAddrPort("10.0.0.2:50000"), netip.MustParseAddrPort("198.51.100.1:443"), natNow())
+	n.releaseAt(f, natNow()-int64(udpSelectorQuarantine)+int64(20*time.Millisecond))
+	select {
+	case <-p.released:
+	case <-time.After(time.Second):
+		t.Fatal("production expiry did not release Go UDP bind reservation without traffic")
+	}
+	if p.held(f.selectorKey) {
+		t.Fatal("Go bind remains reserved after expiry")
+	}
+}
+
+func TestEtonifyNATFinalReleaseCannotEraseNewGoReservation(t *testing.T) {
+	p := newEtonifyGoReservationPort()
+	d := etonifyCloseDispatcher(t)
+	n := d.natFor(p)
+	client := netip.MustParseAddrPort("10.0.0.2:50000")
+	server := netip.MustParseAddrPort("198.51.100.1:443")
+	f := etonifyNATFlowAt(t, n, d, 17, client, server, natNow())
+	n.release(f)
+	n.access.Lock()
+	n.selectors[f.selectorKey].deadline = natNow() - 1
+	n.access.Unlock()
+	p.entered, p.unblock = make(chan struct{}), make(chan struct{})
+	closed := make(chan struct{})
+	go func() { d.Close(); close(closed) }()
+	select {
+	case <-p.entered:
+	case <-time.After(time.Second):
+		t.Fatal("physical release did not enter")
+	}
+	next := etonifyCloseDispatcher(t)
+	replacement := make(chan *forwardFlow, 1)
+	go func() {
+		n2 := next.natFor(p)
+		if n2 == nil {
+			replacement <- nil
+			return
+		}
+		r, ok := n2.reserveAt(next, 17, netip.MustParseAddr("192.0.2.1"), client, server, natNow())
+		if !ok {
+			replacement <- nil
+			return
+		}
+		flow := &forwardFlow{nat: n2, protocol: 17}
+		n2.publish(flow, r)
+		replacement <- flow
+	}()
+	var early *forwardFlow
+	select {
+	case early = <-replacement:
+	case <-time.After(100 * time.Millisecond):
+	}
+	// Do not depend on which goroutine runs first: old release must never erase
+	// replacement ownership, whether reacquisition waits or explicitly refuses.
+	close(p.unblock)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("close blocked")
+	}
+	var newFlow *forwardFlow
+	if early != nil {
+		newFlow = early
+	} else {
+		select {
+		case newFlow = <-replacement:
+		case <-time.After(time.Second):
+			t.Fatal("reacquisition blocked")
+		}
+	}
+	p.entered = nil
+	if newFlow == nil {
+		t.Fatal("safe reacquisition not restored after release")
+	}
+	held := p.held(newFlow.selectorKey)
+	newFlow.nat.release(newFlow)
+	if !held {
+		t.Fatal("old release erased a new physical Go reservation")
+	}
 }

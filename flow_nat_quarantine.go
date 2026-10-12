@@ -29,11 +29,55 @@ func (n *portNAT) expireSelectorLocked(key natSelectorKey, entry *natSelector) {
 func (n *portNAT) sweepQuarantine(now int64) {
 	n.access.Lock()
 	defer n.access.Unlock()
+	n.sweepQuarantineLocked(now)
+}
+
+func (n *portNAT) sweepQuarantineLocked(now int64) {
+	n.cancelExpirySweepLocked()
 	for key, entry := range n.selectors {
 		if entry.references == 0 && entry.deadline <= now {
 			n.expireSelectorLocked(key, entry)
 		}
 	}
+	if deadline := n.nextQuarantineDeadlineLocked(); deadline != 0 {
+		n.scheduleExpirySweepLocked(deadline)
+	}
+}
+
+func (n *portNAT) nextQuarantineDeadlineLocked() int64 {
+	var deadline int64
+	for _, entry := range n.selectors {
+		if entry.references == 0 && (deadline == 0 || entry.deadline < deadline) {
+			deadline = entry.deadline
+		}
+	}
+	return deadline
+}
+
+func (n *portNAT) cancelExpirySweepLocked() {
+	if n.expiryTimer != nil {
+		n.expiryTimer.Stop()
+		n.expiryTimer = nil
+	}
+	n.expiryGeneration++
+	n.expiryDeadline = 0
+}
+
+func (n *portNAT) scheduleExpirySweepLocked(deadline int64) {
+	if n.expiryTimer != nil && n.expiryDeadline <= deadline {
+		return
+	}
+	n.cancelExpirySweepLocked()
+	n.expiryDeadline = deadline
+	generation := n.expiryGeneration
+	n.expiryTimer = time.AfterFunc(time.Duration(max(deadline-natNow(), 1)), func() {
+		n.access.Lock()
+		defer n.access.Unlock()
+		if n.expiryGeneration != generation {
+			return
+		}
+		n.sweepQuarantineLocked(natNow())
+	})
 }
 
 func (n *portNAT) selectorQuarantined(key natSelectorKey, now int64) bool {
@@ -47,7 +91,7 @@ func (n *portNAT) selectorQuarantined(key natSelectorKey, now int64) bool {
 // already released every physical reservation, so expiry has no Port callback.
 func pruneRetiredPortNATsLocked(now int64) {
 	for port, n := range portNATs {
-		if n.references != 0 {
+		if n.references != 0 || n.retiring != nil {
 			continue
 		}
 		n.access.Lock()
@@ -71,7 +115,7 @@ func pruneRetiredPortNATsLocked(now int64) {
 func cleanupRetiredPortNAT(n *portNAT, generation uint64, now int64) {
 	portNATAccess.Lock()
 	defer portNATAccess.Unlock()
-	if portNATs[n.port] != n || n.references != 0 || n.generation != generation {
+	if portNATs[n.port] != n || n.references != 0 || n.retiring != nil || n.generation != generation {
 		return
 	}
 	n.access.Lock()
