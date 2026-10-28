@@ -101,7 +101,6 @@ func TestEtonifyJudgedQueueDiscardedOnResetOrClose(t *testing.T) {
 				d.Close()
 			} else {
 				d.ResetNetwork()
-				s.Flush()
 			}
 			s.ResumeJudged(func([]byte, ForwardFrameMeta) { t.Fatal("stale judgement replayed") })
 			if s.held != 0 || len(s.judging) != 0 || len(s.judged) != 0 {

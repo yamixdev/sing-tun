@@ -22,6 +22,8 @@ loopback-hairpin write path remain in place.
 
 ## Local repairs
 
+- Judgement replay observes network-reset generations before installing or
+  resuming held packets, even when the stack has not called Flush yet.
 - Dispatcher shutdown has one owner. Repeated/concurrent Close cannot detach
   or release a shared allocator twice, and a closed dispatcher cannot attach.
 - Fragment associations track unique eight-byte cells in a fixed 1024-byte

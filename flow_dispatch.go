@@ -386,6 +386,7 @@ func (s *ForwardStage) ResumeJudged(process func(packet []byte, meta ForwardFram
 		s.access.Unlock()
 		return
 	}
+	s.resetLocked()
 	now := s.dispatcher.now()
 	for _, judgement := range s.judged {
 		delete(s.judging, judgement.key)
@@ -818,6 +819,21 @@ func (d *ForwardDispatcher) ResetNetwork() {
 	d.resetGeneration.Add(1)
 }
 
+func (s *ForwardStage) resetLocked() {
+	generation := s.dispatcher.resetGeneration.Load()
+	if s.resetSeen == generation {
+		return
+	}
+	s.resetSeen = generation
+	for key, entry := range s.table {
+		s.removeEntry(key, entry, FlowCloseReset)
+	}
+	clear(s.judging)
+	clear(s.judged)
+	s.judged = s.judged[:0]
+	s.held = 0
+}
+
 func (s *ForwardStage) Flush() {
 	if s == nil {
 		return
@@ -827,19 +843,9 @@ func (s *ForwardStage) Flush() {
 		return
 	}
 	now := d.now()
-	generation := d.resetGeneration.Load()
-	if s.resetSeen != generation {
-		s.resetSeen = generation
-		s.access.Lock()
-		for key, entry := range s.table {
-			s.removeEntry(key, entry, FlowCloseReset)
-		}
-		clear(s.judging)
-		clear(s.judged)
-		s.judged = s.judged[:0]
-		s.held = 0
-		s.access.Unlock()
-	}
+	s.access.Lock()
+	s.resetLocked()
+	s.access.Unlock()
 	for index := range s.ports {
 		staged := &s.ports[index]
 		if len(staged.packets) == 0 {
