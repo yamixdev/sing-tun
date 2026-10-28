@@ -1,9 +1,24 @@
 # Etonify sing-tun patch inventory
 
 Upstream base: `SagerNet/sing-tun` at `5c2edb183cc92eb190d41c04dedfa5519ca3e78c`.
-Runtime implementation tip: `7dee043c80caf6c569710d656cc92386abc6ace1`.
+Local-repair baseline: `bb49d6fa49afd191a642debf8a3229fdc18639b0`.
 Module path remains `github.com/sagernet/sing-tun`; Etonify Core uses an exact
 gitlink and an exact-version local Go replacement, not a moving branch.
+
+## Selected upstream backports
+
+Applied on the local-repair baseline, without replacing it with upstream/dev:
+
+- `ce08a18fce4448081938ff71466c13e3e9ed94aa`: blocking memory-TUN inbound writes.
+- `09dd03de313656f6a72424c308148d07523e50c4`: asynchronous flow judgement,
+  bounded held-packet queues and stack-specific resume paths.
+- `0c41c360144be8bd3131cd2f0202a3d6b737fe62`: exempt TPROXY-marked connections
+  from redirect-port rejection.
+- `611d83b7a57b4719be45581eb674942ff561de6c`: immediately expire explicitly
+  closed forward flows so subsequent packets can be judged again.
+
+The NAT quarantine, fragment coverage, single-owner shutdown and batched
+loopback-hairpin write path remain in place.
 
 ## Local repairs
 
