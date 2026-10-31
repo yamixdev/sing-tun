@@ -36,6 +36,7 @@ type NativeTun struct {
 	interfaceCallback   *list.Element[DefaultInterfaceUpdateCallback]
 	options             Options
 	ruleIndex6          []int
+	ownedRules          []*netlink.Rule
 	readAccess          sync.Mutex
 	writeAccess         sync.Mutex
 	vnetHdr             bool
@@ -742,6 +743,7 @@ func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 			gateway = gateway6.AsSlice()
 		}
 		return netlink.Route{
+			Protocol:  netlink.RouteProtocol(t.options.OwnedRouteProtocol),
 			Dst:       prefixToIPNet(it),
 			Gw:        gateway,
 			LinkIndex: tunLink.Attrs().Index,
@@ -1209,6 +1211,9 @@ func (t *NativeTun) setRules() error {
 		if err != nil {
 			return E.Cause(err, "add rule ", i, "/", len(t.rules()))
 		}
+		if t.options.StrictRuleOwnership {
+			t.ownedRules = append(t.ownedRules, rule)
+		}
 	}
 	return nil
 }
@@ -1236,6 +1241,16 @@ func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
 func (t *NativeTun) unsetRules() error {
 	if t.options.FileDescriptor > 0 {
 		return nil
+	}
+	if t.options.StrictRuleOwnership {
+		var result error
+		for _, rule := range t.ownedRules {
+			if err := netlink.RuleDel(rule); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ESRCH) {
+				result = errors.Join(result, err)
+			}
+		}
+		t.ownedRules = nil
+		return result
 	}
 	if len(t.ruleIndex6) > 0 {
 		for _, index := range t.ruleIndex6 {
