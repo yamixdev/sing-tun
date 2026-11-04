@@ -5,9 +5,18 @@ Local-repair baseline: `bb49d6fa49afd191a642debf8a3229fdc18639b0`.
 Module path remains `github.com/sagernet/sing-tun`; Etonify Core uses an exact
 gitlink and an exact-version local Go replacement, not a moving branch.
 
-## Selected upstream backports
+## Upstream synchronization
 
-Applied on the local-repair baseline, without replacing it with upstream/dev:
+Merged `SagerNet/sing-tun` dev at
+`7ac0256fa09ddf7215f3a7ccd0845ed18b235c4a` on 2026-11-04. The original
+base above remains the module-version anchor, not the latest upstream tip.
+Conflicts in dispatcher, fragment tracking and NAT ownership retain the local
+repairs below. Accepted TCP judgements now expire after the handshake, as in
+upstream, while the local RST guard is preserved.
+
+## Earlier upstream backports
+
+Applied before the full merge, without replacing the local-repair baseline:
 
 - `ce08a18fce4448081938ff71466c13e3e9ed94aa`: blocking memory-TUN inbound writes.
 - `09dd03de313656f6a72424c308148d07523e50c4`: asynchronous flow judgement,

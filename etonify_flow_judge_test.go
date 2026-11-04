@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/logger"
 )
 
@@ -78,6 +79,29 @@ func TestEtonifyExplicitFlowCloseExpiresImmediately(t *testing.T) {
 	f.CloseFlow()
 	if !entryExpired(entry, 0) {
 		t.Fatal("explicitly closed flow remains cached and drops new packets")
+	}
+}
+
+func TestEtonifyAcceptedTCPReleasesJudgementAfterHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		flags  header.TCPFlags
+		remove bool
+	}{
+		{"syn_retransmit", header.TCPFlagSyn, false},
+		{"established_ack", header.TCPFlagAck, true},
+		{"reset", header.TCPFlagRst, true},
+		{"reset_with_syn", header.TCPFlagRst | header.TCPFlagSyn, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stage := &ForwardStage{}
+			entry := &flowEntry{action: ActionAccept, idle: time.Second}
+			packet := &forwardPacket{protocol: uint8(header.TCPProtocolNumber), tcpFlags: tc.flags}
+			handled, remove := stage.handleHit(entry, packet, nil, 0, nil)
+			if handled || remove != tc.remove {
+				t.Fatalf("accepted TCP: handled=%v remove=%v, want false/%v", handled, remove, tc.remove)
+			}
+		})
 	}
 }
 

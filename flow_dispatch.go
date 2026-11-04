@@ -465,7 +465,7 @@ func (s *ForwardStage) handleHit(entry *flowEntry, packet *forwardPacket, raw []
 				return false, true
 			}
 			if packet.tcpFlags&header.TCPFlagSyn == 0 {
-				entry.idle = tcpEstablishedTimeout
+				return false, true
 			}
 		} else if packet.protocol == uint8(header.UDPProtocolNumber) {
 			packet.verdict = entry.verdict

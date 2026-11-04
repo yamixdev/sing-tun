@@ -16,8 +16,10 @@ import (
 	"github.com/sagernet/sing-tun/internal/winipcfg"
 	"github.com/sagernet/sing-tun/internal/winsys"
 	"github.com/sagernet/sing-tun/internal/wintun"
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/windnsapi"
+	"github.com/sagernet/sing/common/x/list"
 
 	"golang.org/x/sys/windows"
 )
@@ -37,6 +39,13 @@ type NativeTun struct {
 	closeOnce   sync.Once
 	close       atomic.Int32
 	fwpmSession uintptr
+
+	routeFamilies            []winipcfg.AddressFamily
+	interfaceAccess          sync.Mutex
+	forwardingWarned         []interfaceFamily
+	weakHostSendDisabled     map[interfaceFamily]string
+	interfaceChangeListener  *winipcfg.InterfaceChangeCallback
+	defaultInterfaceListener *list.Element[DefaultInterfaceUpdateCallback]
 }
 
 func New(options Options) (WinTun, error) {
@@ -135,6 +144,7 @@ func (t *NativeTun) configure() error {
 		inetIf.OtherStatefulConfigurationSupported = false
 		inetIf.NLMTU = t.options.MTU
 		if t.options.AutoRoute {
+			inetIf.DisableDefaultRoutes = false
 			inetIf.UseAutomaticMetric = false
 			inetIf.Metric = 0
 		}
@@ -154,6 +164,7 @@ func (t *NativeTun) configure() error {
 		inet6If.OtherStatefulConfigurationSupported = false
 		inet6If.NLMTU = t.options.MTU
 		if t.options.AutoRoute {
+			inet6If.DisableDefaultRoutes = false
 			inet6If.UseAutomaticMetric = false
 			inet6If.Metric = 0
 		}
@@ -180,6 +191,19 @@ func (t *NativeTun) Start() error {
 	if err != nil {
 		return err
 	}
+	t.routeFamilies = routeFamilies(routeRanges)
+	t.weakHostSendDisabled = make(map[interfaceFamily]string)
+	interfaceChangeListener, err := winipcfg.RegisterInterfaceChangeCallback(func(_ winipcfg.MibNotificationType, _ *winipcfg.MibIPInterfaceRow) {
+		t.enforceInterfaceOptions(luid)
+	})
+	if err != nil {
+		return E.Cause(err, "register interface change callback")
+	}
+	t.interfaceChangeListener = interfaceChangeListener
+	t.defaultInterfaceListener = t.options.InterfaceMonitor.RegisterCallback(func(_ *control.Interface, _ int) {
+		t.enforceInterfaceOptions(luid)
+	})
+	t.enforceInterfaceOptions(luid)
 	err = addRouteList(luid, routeRanges, gateway4, gateway6, 0)
 	if err != nil {
 		return err
@@ -664,6 +688,13 @@ func (t *NativeTun) Close() error {
 		if t.fwpmSession != 0 {
 			winsys.FwpmEngineClose0(t.fwpmSession)
 		}
+		if t.interfaceChangeListener != nil {
+			t.interfaceChangeListener.Unregister()
+		}
+		if t.defaultInterfaceListener != nil {
+			t.options.InterfaceMonitor.UnregisterCallback(t.defaultInterfaceListener)
+		}
+		t.restoreWeakHostSend()
 		if t.options.AutoRoute {
 			windnsapi.FlushResolverCache()
 		}
