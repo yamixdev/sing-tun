@@ -55,7 +55,7 @@ func (p *etonifyClosePort) pathCount() int {
 }
 func etonifyCloseDispatcher(t *testing.T) *ForwardDispatcher {
 	t.Helper()
-	d := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+	d := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	t.Cleanup(d.Close)
 	return d
 }

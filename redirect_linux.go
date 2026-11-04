@@ -21,7 +21,6 @@ import (
 )
 
 type autoRedirect struct {
-	ownership                    *RedirectOwnership
 	tunOptions                   *Options
 	ctx                          context.Context
 	handler                      AutoRedirectHandler
@@ -67,7 +66,6 @@ type autoRedirect struct {
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 	r := &autoRedirect{
-		ownership:                options.Ownership,
 		tunOptions:               options.TunOptions,
 		ctx:                      options.Context,
 		handler:                  options.Handler,

@@ -23,7 +23,7 @@ func (h *etonifyJudgeHandler) JudgeFlow(uint8, netip.AddrPort, netip.AddrPort, [
 
 func TestEtonifyJudgeDoesNotBlockDispatch(t *testing.T) {
 	h := &etonifyJudgeHandler{entered: make(chan struct{}), release: make(chan struct{})}
-	d := NewForwardDispatcher(h, nil, logger.NOP(), UDPNatOptions{}, 0)
+	d := NewForwardDispatcher(h, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	defer d.Close()
 	released := false
 	defer func() {
@@ -85,7 +85,7 @@ func TestEtonifyJudgedQueueDiscardedOnResetOrClose(t *testing.T) {
 	for _, shutdown := range []bool{false, true} {
 		t.Run(map[bool]string{false: "reset", true: "close"}[shutdown], func(t *testing.T) {
 			h := &etonifyJudgeHandler{entered: make(chan struct{}), release: make(chan struct{})}
-			d := NewForwardDispatcher(h, nil, logger.NOP(), UDPNatOptions{}, 0)
+			d := NewForwardDispatcher(h, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 			defer d.Close()
 			ready := make(chan struct{}, 1)
 			s := d.NewStage(nil, func() { ready <- struct{}{} })

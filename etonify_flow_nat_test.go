@@ -59,7 +59,7 @@ func etonifyNATFlow(t *testing.T, n *portNAT, d *ForwardDispatcher, protocol uin
 
 func TestEtonifyNATRetiredSelectorNotReused(t *testing.T) {
 	p := &etonifyNATPort{count: 2}
-	d := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+	d := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	n := d.natFor(p)
 	client := netip.MustParseAddrPort("10.0.0.2:50000")
 	server := netip.MustParseAddrPort("198.51.100.1:443")
@@ -75,7 +75,7 @@ func TestEtonifyNATRetiredSelectorNotReused(t *testing.T) {
 
 func TestEtonifyNATLastClosePreservesLogicalQuarantine(t *testing.T) {
 	p := &etonifyNATPort{count: 1}
-	d := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+	d := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	n := d.natFor(p)
 	flow := etonifyNATFlow(t, n, d, 17, netip.MustParseAddrPort("10.0.0.2:50000"), netip.MustParseAddrPort("198.51.100.1:443"))
 	n.release(flow)
@@ -83,7 +83,7 @@ func TestEtonifyNATLastClosePreservesLogicalQuarantine(t *testing.T) {
 	if len(p.held) != 0 || p.releases != 1 {
 		t.Fatal("last close did not free physical reservation once")
 	}
-	next := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+	next := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	defer next.Close()
 	n2 := next.natFor(p)
 	if n2 != n {
@@ -270,7 +270,7 @@ func TestEtonifyNATRegistryBackpressure(t *testing.T) {
 		if i == 0 {
 			first = n
 		}
-		d := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+		d := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 		f := etonifyNATFlowAt(t, n, d, 17, netip.MustParseAddrPort("10.0.0.2:50000"), netip.MustParseAddrPort("198.51.100.1:443"), natNow())
 		n.release(f)
 		releasePortNAT(n)
@@ -334,7 +334,7 @@ func BenchmarkEtonifyNATShortRangeExhaustion(b *testing.B) {
 	p := &etonifyNATPort{count: 1}
 	n := acquirePortNAT(p)
 	defer releasePortNAT(n)
-	d := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+	d := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	a, _ := p.PortAddresses()
 	c := netip.MustParseAddrPort("10.0.0.2:50000")
 	s := netip.MustParseAddrPort("198.51.100.1:443")
@@ -360,7 +360,7 @@ func BenchmarkEtonifyNATQuarantineSweep(b *testing.B) {
 	p := &etonifyNATPort{count: 2}
 	n := acquirePortNAT(p)
 	defer releasePortNAT(n)
-	d := NewForwardDispatcher(nil, nil, logger.NOP(), UDPNatOptions{}, 0)
+	d := NewForwardDispatcher(nil, nil, logger.NOP(), 0, UDPNatOptions{}, 0)
 	address, _ := p.PortAddresses()
 	client := netip.MustParseAddrPort("10.0.0.2:50000")
 	server := netip.MustParseAddrPort("198.51.100.1:443")

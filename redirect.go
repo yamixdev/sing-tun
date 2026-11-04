@@ -35,7 +35,6 @@ type AutoRedirectHandler interface {
 }
 
 type AutoRedirectOptions struct {
-	Ownership                *RedirectOwnership
 	TunOptions               *Options
 	Context                  context.Context
 	Handler                  AutoRedirectHandler
@@ -48,12 +47,6 @@ type AutoRedirectOptions struct {
 	CustomRedirectListenerFD func() (int, error)
 	RouteAddressSet          func() (include []netip.Prefix, exclude []netip.Prefix, err error)
 	AndroidVPNService        bool
-}
-
-type RedirectOwnership struct {
-	RedirectTable int
-	TProxyTable   int
-	RulePriority  int
 }
 
 // netd's Fwmark owns bits 0-19 (netId, explicitlySelected, protectedFromVpn,

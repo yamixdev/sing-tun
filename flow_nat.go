@@ -25,6 +25,7 @@ var (
 
 type portNAT struct {
 	port       Port
+	routed     bool
 	references int
 	idleTimer  *time.Timer   // guarded by portNATAccess
 	generation uint64        // invalidates already-running cleanup callbacks
@@ -119,8 +120,10 @@ func acquirePortNATLocked(port Port) (*portNAT, <-chan struct{}) {
 		for shardCount < runtime.GOMAXPROCS(0) {
 			shardCount <<= 1
 		}
+		_, routed := port.(RoutedPort)
 		nat = &portNAT{
 			port:      port,
+			routed:    routed,
 			hasher:    maphash.NewHasher[flowKey](),
 			shardMask: uint32(shardCount - 1),
 			shards:    make([]natShard, shardCount),
@@ -333,7 +336,13 @@ func (n *portNAT) reserveAt(dispatcher *ForwardDispatcher, protocol uint8, portA
 		}
 	}
 	ranges, ranged := n.selectorRanges(protocol)
-	reserver, hasReserver := portCapability[PortWithSelectorReservation](n.port)
+	var (
+		reserver    PortWithSelectorReservation
+		hasReserver bool
+	)
+	if !n.routed {
+		reserver, hasReserver = portCapability[PortWithSelectorReservation](n.port)
+	}
 	claim := func(candidate uint16) bool {
 		selectorKey := natSelectorKey{protocol: protocol, portAddress: portAddress, selector: candidate}
 		reverseKey := n.reverseKeyFor(protocol, portAddress, server, candidate)

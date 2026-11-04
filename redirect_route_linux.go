@@ -28,15 +28,11 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	defer r.redirectRouteAccess.Unlock()
 	r.redirectRoutesActive = false
 	r.cleanupRedirectRoutesLocked()
-	if r.ownership == nil {
-		r.cleanupStaleRouteRules(redirectRouteRulePriority, 0)
-		if r.tproxyEnabled() {
-			r.cleanupStaleRouteRules(redirectRouteRulePriority, r.tunOptions.AutoRedirectTProxyMark)
-		}
-		r.redirectRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.tproxyRouteTableIndex)
-	} else {
-		r.redirectRouteTableIndex = r.ownership.RedirectTable
+	r.cleanupStaleRouteRules(redirectRouteRulePriority, 0)
+	if r.tproxyEnabled() {
+		r.cleanupStaleRouteRules(redirectRouteRulePriority, r.tunOptions.AutoRedirectTProxyMark)
 	}
+	r.redirectRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.tproxyRouteTableIndex)
 	defer func() {
 		if err != nil {
 			r.cleanupRedirectRoutesLocked()
@@ -48,7 +44,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	}
 	if r.enableIPv4 {
 		rule := netlink.NewRule()
-		rule.Priority = r.routeRulePriority()
+		rule.Priority = redirectRouteRulePriority
 		rule.Table = r.redirectRouteTableIndex
 		rule.Family = unix.AF_INET
 		err = netlink.RuleAdd(rule)
@@ -58,7 +54,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	}
 	if r.enableIPv6 {
 		rule := netlink.NewRule()
-		rule.Priority = r.routeRulePriority()
+		rule.Priority = redirectRouteRulePriority
 		rule.Table = r.redirectRouteTableIndex
 		rule.Family = unix.AF_INET6
 		err = netlink.RuleAdd(rule)
@@ -77,17 +73,12 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 }
 
 func (r *autoRedirect) setupTProxyRouteLocked() error {
-	if r.ownership == nil {
-		r.tproxyRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.redirectRouteTableIndex)
-	} else {
-		r.tproxyRouteTableIndex = r.ownership.TProxyTable
-	}
+	r.tproxyRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.redirectRouteTableIndex)
 	loopbackLink, err := netlink.LinkByName("lo")
 	if err != nil {
 		return E.Cause(err, "find loopback interface")
 	}
 	route := netlink.Route{
-		Protocol:  netlink.RouteProtocol(r.tunOptions.OwnedRouteProtocol),
 		LinkIndex: loopbackLink.Attrs().Index,
 		Dst:       defaultDestination(unix.AF_INET6),
 		Table:     r.tproxyRouteTableIndex,
@@ -108,7 +99,7 @@ func (r *autoRedirect) setupTProxyRouteLocked() error {
 
 func (r *autoRedirect) tproxyRouteRule() *netlink.Rule {
 	rule := netlink.NewRule()
-	rule.Priority = r.routeRulePriority()
+	rule.Priority = redirectRouteRulePriority
 	rule.Family = unix.AF_INET6
 	rule.Mark = r.tunOptions.AutoRedirectTProxyMark
 	rule.MarkSet = true
@@ -165,31 +156,24 @@ func (r *autoRedirect) cleanupRedirectRoutesLocked() {
 		&netlink.Route{Table: r.redirectRouteTableIndex},
 		netlink.RT_FILTER_TABLE)
 	for _, route := range routes {
-		if r.ownership != nil && int(route.Protocol) != r.tunOptions.OwnedRouteProtocol {
-			continue
-		}
 		_ = netlink.RouteDel(&route)
 	}
 	if r.enableIPv4 {
 		rule := netlink.NewRule()
-		rule.Priority = r.routeRulePriority()
+		rule.Priority = redirectRouteRulePriority
 		rule.Table = r.redirectRouteTableIndex
 		rule.Family = unix.AF_INET
 		_ = netlink.RuleDel(rule)
 	}
 	if r.enableIPv6 {
 		rule := netlink.NewRule()
-		rule.Priority = r.routeRulePriority()
+		rule.Priority = redirectRouteRulePriority
 		rule.Table = r.redirectRouteTableIndex
 		rule.Family = unix.AF_INET6
 		_ = netlink.RuleDel(rule)
 	}
 	if r.tproxyRouteTableIndex != 0 {
-		if r.ownership == nil {
-			flushRouteTable(r.tproxyRouteTableIndex)
-		} else {
-			r.flushOwnedRouteTable(r.tproxyRouteTableIndex)
-		}
+		flushRouteTable(r.tproxyRouteTableIndex)
 		_ = netlink.RuleDel(r.tproxyRouteRule())
 	}
 }
@@ -205,9 +189,6 @@ func (r *autoRedirect) reconcileRedirectRoutesLocked(redirectInterfaces []contro
 		netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return E.Cause(err, "list redirect routes")
-	}
-	if r.ownership != nil {
-		currentRoutes = common.Filter(currentRoutes, func(route netlink.Route) bool { return int(route.Protocol) == r.tunOptions.OwnedRouteProtocol })
 	}
 	routesToAdd, routesToDelete := calculateRedirectRouteChanges(
 		r.redirectRouteTableIndex,
@@ -225,9 +206,6 @@ func (r *autoRedirect) reconcileRedirectRoutesLocked(redirectInterfaces []contro
 	}
 	for index := range routesToAdd {
 		route := &routesToAdd[index]
-		if r.ownership != nil {
-			route.Protocol = netlink.RouteProtocol(r.tunOptions.OwnedRouteProtocol)
-		}
 		err = netlink.RouteAppend(route)
 		if err != nil {
 			return E.Cause(err, "append redirect route ", route)

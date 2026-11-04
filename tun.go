@@ -67,8 +67,6 @@ const (
 )
 
 type Options struct {
-	StrictRuleOwnership                   bool
-	OwnedRouteProtocol                    int
 	Name                                  string
 	NetNs                                 string
 	Inet4Address                          []netip.Prefix
