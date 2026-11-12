@@ -1,8 +1,10 @@
 package tun
 
 import (
+	"bytes"
 	"math"
 	"net/netip"
+	"os"
 
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/gtcpip/header"
@@ -11,17 +13,38 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-func (d *ForwardDispatcher) hijackDNSPacket(packet *forwardPacket) {
-	writer := &dnsResponseWriter{
-		writeback: d.writeback,
-		source:    packet.source,
+const flowDNSConcurrency = 64
+
+func (d *ForwardDispatcher) hijackDNSPacket(packet *forwardPacket, generation uint32) {
+	if !d.dnsPacketCurrent(generation) {
+		return
 	}
-	d.handler.NewDNSPacket(header.UDP(packet.transport).Payload(), M.SocksaddrFromNetIP(packet.source), M.SocksaddrFromNetIP(packet.destination), writer)
+	// The handler can wait for an upstream dial. Drop DNS datagrams under
+	// load instead of waiting on the packet engine or holding the stage lock.
+	select {
+	case d.dnsInFlight <- struct{}{}:
+	default:
+		return
+	}
+	payload := bytes.Clone(header.UDP(packet.transport).Payload())
+	source, destination := packet.source, packet.destination
+	go func() {
+		defer func() { <-d.dnsInFlight }()
+		if d.dnsPacketCurrent(generation) {
+			writer := &dnsResponseWriter{dispatcher: d, generation: generation, source: source}
+			d.handler.NewDNSPacket(payload, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), writer)
+		}
+	}()
+}
+
+func (d *ForwardDispatcher) dnsPacketCurrent(generation uint32) bool {
+	return !d.closed.Load() && d.resetGeneration.Load() == generation
 }
 
 type dnsResponseWriter struct {
-	writeback ForwardWriteback
-	source    netip.AddrPort
+	dispatcher *ForwardDispatcher
+	generation uint32
+	source     netip.AddrPort
 }
 
 func (w *dnsResponseWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
@@ -31,7 +54,7 @@ func (w *dnsResponseWriter) WritePacket(buffer *buf.Buffer, destination M.Socksa
 	}
 	sourceAddr := w.source.Addr().Unmap()
 	destinationAddr := destination.Addr.Unmap()
-	headroom := w.writeback.ReturnHeadroom()
+	headroom := w.dispatcher.writeback.ReturnHeadroom()
 	udpLen := header.UDPMinimumSize + buffer.Len()
 	var (
 		packet []byte
@@ -93,5 +116,8 @@ func (w *dnsResponseWriter) WritePacket(buffer *buf.Buffer, destination M.Socksa
 	if inet4Hdr, isInet4 := ipHdr.(header.IPv4); isInet4 {
 		inet4Hdr.SetChecksum(^inet4Hdr.CalculateChecksum())
 	}
-	return w.writeback.WriteReturnPackets([][]byte{packet})
+	if !w.dispatcher.dnsPacketCurrent(w.generation) {
+		return os.ErrClosed
+	}
+	return w.dispatcher.writeback.WriteReturnPackets([][]byte{packet})
 }

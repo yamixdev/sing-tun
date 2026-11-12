@@ -167,6 +167,7 @@ type ForwardDispatcher struct {
 	stages          []*ForwardStage
 	stageCount      atomic.Int32
 	resetGeneration atomic.Uint32
+	dnsInFlight     chan struct{}
 }
 
 type stagedPort struct {
@@ -228,6 +229,7 @@ func NewForwardDispatcher(handler Handler, writeback ForwardWriteback, logger lo
 		udpFiltering: udpOptions.Filtering,
 		icmpTimeout:  icmpTimeout,
 		ports:        make(map[Port]*portReturn),
+		dnsInFlight:  make(chan struct{}, flowDNSConcurrency),
 	}
 	if dispatcher.udpTimeout <= 0 {
 		dispatcher.udpTimeout = defaultUDPTimeout
@@ -528,7 +530,7 @@ func (s *ForwardStage) install(key flowKey, packet *forwardPacket, raw []byte, m
 		return true
 	case ActionHijackDNS:
 		if packet.protocol == uint8(header.UDPProtocolNumber) {
-			d.hijackDNSPacket(packet)
+			d.hijackDNSPacket(packet, s.resetSeen)
 			return true
 		}
 		s.installAccept(key, packet, verdict, now)
